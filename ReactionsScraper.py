@@ -2,13 +2,28 @@ import json
 from playwright.sync_api import sync_playwright
 
 class InstagramScraper:
+    """
+    Clase para extraer datos de publicaciones (posts y reels) de perfiles de Instagram
+    utilizando Playwright para interceptar respuestas de la API.
+    """
     def __init__(self, auth_file="auth.json"):
+        """
+        Inicializa el scraper con el archivo de sesion.
+        
+        Args:
+            auth_file (str): Ruta al archivo JSON con las cookies y estado de sesion.
+        """
         self.auth_file = auth_file
-
-        self.data = {}  # 🔥 dataset único por shortcode
+        self.data = {}  # Dataset unico por shortcode
         self._attached_pages = set()
 
     def handle_response(self, response):
+        """
+        Manejador de respuestas para interceptar y procesar datos JSON de Instagram.
+        
+        Args:
+            response: Objeto de respuesta de Playwright.
+        """
         content_type = response.headers.get("content-type", "").lower()
 
         if "json" not in content_type and "graphql" not in response.url:
@@ -17,9 +32,7 @@ class InstagramScraper:
         try:
             data = response.json()
 
-            # =========================================
-            # 🔹 POSTS (feed principal)
-            # =========================================
+            # Procesamiento de POSTS (feed principal)
             if "data" in data and "xdt_api__v1__feed__user_timeline_graphql_connection" in data["data"]:
                 edges = data["data"]["xdt_api__v1__feed__user_timeline_graphql_connection"].get("edges", [])
 
@@ -30,11 +43,11 @@ class InstagramScraper:
                     if not code:
                         continue
 
-                    # 🔥 SOLO POSTS (no videos)
+                    # Solo posts estaticos (no videos aqui para evitar duplicidad)
                     if node.get("video_versions") is not None:
                         continue
 
-                    # 🔥 SI YA EXISTE COMO REEL → NO LO SOBREESCRIBAS
+                    # Si ya existe como reel, no se sobreescribe
                     if code in self.data and self.data[code]["type"] == "reel":
                         continue
 
@@ -46,11 +59,9 @@ class InstagramScraper:
                         "views": None
                     }
 
-                print(f"📸 Posts acumulados: {len([d for d in self.data.values() if d['type']=='post'])}")
+                print(f"Posts acumulados: {len([d for d in self.data.values() if d['type']=='post'])}")
 
-            # =========================================
-            # 🔹 REELS (donde SÍ hay views)
-            # =========================================
+            # Procesamiento de REELS
             if "data" in data and "xdt_api__v1__clips__user__connection_v2" in data["data"]:
                 edges = data["data"]["xdt_api__v1__clips__user__connection_v2"].get("edges", [])
 
@@ -61,7 +72,7 @@ class InstagramScraper:
                     if not code:
                         continue
 
-                    # 🔥 SI YA EXISTE COMO POST → LO SOBREESCRIBE (REEL ES MEJOR)
+                    # Los Reels proporcionan conteo de reproducciones (views)
                     self.data[code] = {
                         "shortcode": code,
                         "type": "reel",
@@ -70,16 +81,22 @@ class InstagramScraper:
                         "views": media.get("play_count", 0)
                     }
 
-                print(f"🎬 Reels acumulados: {len([d for d in self.data.values() if d['type']=='reel'])}")
+                print(f"Reels acumulados: {len([d for d in self.data.values() if d['type']=='reel'])}")
 
         except Exception:
             pass
 
-    # =========================================
-    # 🔹 SCROLL INTELIGENTE
-    # =========================================
     def scroll_section(self, page, url, max_scrolls=6, label=""):
-        print(f"\n🔎 Scrapeando {label.upper()}...")
+        """
+        Realiza scroll automatico en una seccion especifica para cargar mas contenido.
+        
+        Args:
+            page: Pagina de Playwright.
+            url (str): URL a la que navegar.
+            max_scrolls (int): Numero maximo de scrolls a realizar.
+            label (str): Etiqueta para los mensajes de log.
+        """
+        print(f"\nScrapeando {label.upper()}...")
 
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(5000)
@@ -88,7 +105,7 @@ class InstagramScraper:
         no_change = 0
 
         for i in range(max_scrolls):
-            print(f"🔽 Scroll {i+1} ({label})")
+            print(f"Scroll {i+1} ({label})")
 
             page.mouse.wheel(0, 3000)
             page.wait_for_timeout(3000)
@@ -97,20 +114,26 @@ class InstagramScraper:
 
             if current_count == prev_count:
                 no_change += 1
-                print(f"⚠️ Sin nuevos datos ({no_change})")
+                print(f"Sin nuevos datos ({no_change})")
             else:
                 no_change = 0
 
             if no_change >= 2:
-                print("⛔ Deteniendo scroll (no hay más contenido)")
+                print("Deteniendo scroll (no hay mas contenido)")
                 break
 
             prev_count = current_count
 
-    # =========================================
-    # 🔹 MAIN
-    # =========================================
     def scrape_account(self, profile_url):
+        """
+        Ejecuta el proceso completo de scraping para una cuenta.
+        
+        Args:
+            profile_url (str): URL del perfil de Instagram.
+            
+        Returns:
+            list: Lista de diccionarios con los datos extraidos.
+        """
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False)
             context = browser.new_context(storage_state=self.auth_file)
@@ -120,40 +143,35 @@ class InstagramScraper:
                 page.on("response", self.handle_response)
                 self._attached_pages.add(id(page))
 
-            # 🔹 POSTS
+            # Scrapear Posts
             self.scroll_section(page, profile_url, label="posts")
 
-            # 🔹 REELS
+            # Scrapear Reels
             reels_url = profile_url.rstrip("/") + "/reels/"
             self.scroll_section(page, reels_url, label="reels")
 
             browser.close()
 
         result = list(self.data.values())
-
-        print(f"\n📊 DATASET FINAL: {len(result)}")
-
+        print(f"\nDATASET FINAL: {len(result)}")
         return result
 
     def save_to_json(self, data, filename="instagram_data.json"):
-        """Guarda los datos en un archivo JSON con formato indentado."""
+        """
+        Guarda los datos extraidos en un archivo JSON.
+        
+        Args:
+            data (list): Datos a guardar.
+            filename (str): Nombre del archivo de salida.
+        """
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
-        print(f"\n📁 Datos guardados correctamente en: {filename}")
+        print(f"\nDatos guardados correctamente en: {filename}")
 
-
-# =========================================
-# 🔹 TEST
-# =========================================
 if __name__ == "__main__":
     scraper = InstagramScraper()
-
     url = "https://www.instagram.com/midu.dev/"
-
     data = scraper.scrape_account(url)
-
-    # 🔹 Guardar en JSON
     scraper.save_to_json(data)
-
     print("\n--- PRIMEROS 5 RESULTADOS ---")
     print(json.dumps(data[:5], indent=4))
