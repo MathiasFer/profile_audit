@@ -15,3 +15,6 @@ auth.json
 .env
 instagram_data.json
 .pdf
+.json
+data_midu.dev.json
+*.pdf

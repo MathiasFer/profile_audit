@@ -1,0 +1,8 @@
+pandas
+matplotlib
+numpy
+python-dotenv
+groq
+playwright
+seaborn
+fpdf2
