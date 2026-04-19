@@ -12,3 +12,4 @@ auth.json
 .env
 .auth.json
 .venv/
+instagram_data.json
