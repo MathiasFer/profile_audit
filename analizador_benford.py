@@ -6,6 +6,7 @@ import numpy as np
 from collections import Counter
 from dotenv import load_dotenv
 from groq import Groq
+from utils_report import generate_pdf_report
 
 # Cargar variables de entorno
 load_dotenv()
@@ -35,17 +36,15 @@ class AuditorInstagram:
         primeros_digitos = datos.apply(lambda x: int(str(x)[0]))
         conteo = Counter(primeros_digitos)
         
-        # Distribución Real
         dist_real = {d: (conteo.get(d, 0) / total_muestras) * 100 for d in range(1, 10)}
         
-        # CÁLCULO DEL MAD (Mean Absolute Deviation)
         sumatoria_error = sum(abs(dist_real[d] - self.benford_teorico[d]) for d in range(1, 10))
         mad = sumatoria_error / 9
 
         return dist_real, total_muestras, mad
 
-    def graficar_dashboards(self, res_likes, res_views):
-        """Genera visualizaciones. Se quitó emojis para evitar errores de fuente."""
+    def graficar_dashboards(self, res_likes, res_views, save_path="benford_plot.png"):
+        """Genera visualizaciones y las guarda como imagen."""
         plt.style.use('ggplot')
         fig, axes = plt.subplots(1, 2, figsize=(15, 7))
         fig.suptitle('Auditoria Forense Digital: Ley de Benford', 
@@ -67,7 +66,6 @@ class AuditorInstagram:
 
                 ax.set_title(titulo, fontsize=14, fontweight='bold')
                 ax.set_xticks(range(1, 10))
-                ax.set_ylim(0, max(max(y), 45))
                 ax.legend()
             else:
                 ax.text(0.5, 0.5, f'Datos insuficientes\n({n}/{self.umbral_minimo})', ha='center', va='center')
@@ -76,9 +74,9 @@ class AuditorInstagram:
         dibujar_metrica(axes[1], res_views['dist'], res_views['n'], "Distribucion de Views", '#27AE60')
 
         plt.tight_layout()
-        # block=False permite que el script siga corriendo mientras el gráfico está abierto
-        plt.show(block=False)
-        print("📊 Gráfico generado. (No es necesario cerrarlo para ver el análisis de la IA)")
+        plt.savefig(save_path)
+        print(f"📉 Gráfico guardado en: {save_path}")
+        plt.close()
 
     def pedir_veredicto_groq(self, prompt):
         """Conexión centralizada con Groq."""
@@ -93,25 +91,23 @@ class AuditorInstagram:
             return f"Error en API Groq: {e}"
 
     def ejecutar_auditoria(self):
-        print("🚀 Iniciando procesamiento...")
+        print("🚀 Iniciando procesamiento de auditoría Benford...")
         
-        # 1. Procesar Datos
         dist_l, n_l, mad_l = self.obtener_distribucion(self.df['likes'])
         reels_data = self.df[self.df['type'] == 'reel']
         dist_v, n_v, mad_v = self.obtener_distribucion(reels_data['views'])
 
-        # 2. Mostrar Dashboard
-        self.graficar_dashboards({'dist': dist_l, 'n': n_l}, {'dist': dist_v, 'n': n_v})
+        # 1. Generar Imagen
+        plot_path = "benford_plot.png"
+        self.graficar_dashboards({'dist': dist_l, 'n': n_l}, {'dist': dist_v, 'n': n_v}, plot_path)
 
-        # 3. Preparar Reporte MAD
-        resumen_ia = {
-            "likes": {"mad": round(mad_l, 4), "n": n_l, "dist": dist_l},
-            "views": {"mad": round(mad_v, 4), "n": n_v, "dist": dist_v}
-        }
-
-        # 4. Consultar IA
-        if n_l >= 10: # Umbral mínimo técnico para que la IA tenga qué leer
-            print("🤖 Consultando a Groq con métricas MAD...")
+        # 2. Consultar IA
+        if n_l >= 10:
+            print("🤖 Consultando a Groq para diagnóstico final...")
+            resumen_ia = {
+                "likes": {"mad": round(mad_l, 4), "n": n_l, "dist": dist_l},
+                "views": {"mad": round(mad_v, 4), "n": n_v, "dist": dist_v}
+            }
             
             prompt_auditoria = f"""
             Analiza estos datos de Instagram usando la Ley de Benford y el Mean Absolute Deviation (MAD).
@@ -127,25 +123,27 @@ class AuditorInstagram:
 
             TAREAS:
             1. Analiza likes y views por separado basándote en su MAD.
-            2. Identifica inconsistencias (ej: Views naturales pero Likes manipulados).
+            2. Identifica inconsistencias.
             3. Determina indicios de bots.
             4. Veredicto final: RIESGO BAJO, MEDIO o ALTO.
-            
-            Sé técnico pero claro.
             """
             
             veredicto = self.pedir_veredicto_groq(prompt_auditoria)
-            print("\n" + "="*60)
-            print("📜 INFORME DE AUDITORÍA FORENSE (MAD)")
-            print("="*60)
-            print(veredicto)
-            print("="*60)
             
-            # Mantener el gráfico abierto al final del script
-            print("\nCierra la ventana del gráfico para terminar el programa.")
-            plt.show() 
+            # 3. Generar PDF
+            pdf_filename = "Reporte_Benford.pdf"
+            generate_pdf_report(
+                pdf_filename,
+                "Auditoría Forense: Ley de Benford",
+                plot_path,
+                veredicto
+            )
         else:
             print("⚠️ Datos insuficientes para auditoría IA.")
+
+        # Limpieza
+        if os.path.exists(plot_path):
+            os.remove(plot_path)
 
 if __name__ == "__main__":
     auditor = AuditorInstagram("instagram_data.json")
