@@ -1,20 +1,9 @@
-venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.pyw
-*.pyz
-*.pywz
-*.pyzw
-*.pyz
-auth.json
-.env
-.auth.json
-.venv/
-.env
-instagram_data.json
-.pdf
-.json
-data_midu.dev.json
-*.pdf
+# Ignorar todo por defecto en esta rama
+*
+
+# Permitir solo estos archivos
+!.gitignore
+!README.md
+!ReactionsScraper.py
+!SessionCookies.py
+!TestSession.py
