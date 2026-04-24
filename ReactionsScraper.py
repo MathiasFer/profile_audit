@@ -1,177 +1,191 @@
 import json
+import re
 from playwright.sync_api import sync_playwright
 
-class InstagramScraper:
-    """
-    Clase para extraer datos de publicaciones (posts y reels) de perfiles de Instagram
-    utilizando Playwright para interceptar respuestas de la API.
-    """
+class IGUnifiedScraper:
     def __init__(self, auth_file="auth.json"):
-        """
-        Inicializa el scraper con el archivo de sesion.
-        
-        Args:
-            auth_file (str): Ruta al archivo JSON con las cookies y estado de sesion.
-        """
         self.auth_file = auth_file
-        self.data = {}  # Dataset unico por shortcode
-        self._attached_pages = set()
+        self.posts_data = {}
+        self.current_post = None
 
+    # 🎯 Interceptor global
     def handle_response(self, response):
-        """
-        Manejador de respuestas para interceptar y procesar datos JSON de Instagram.
-        
-        Args:
-            response: Objeto de respuesta de Playwright.
-        """
-        content_type = response.headers.get("content-type", "").lower()
-
-        if "json" not in content_type and "graphql" not in response.url:
-            return
+        url = response.url
 
         try:
             data = response.json()
+        except:
+            return
 
-            # Procesamiento de POSTS (feed principal)
-            if "data" in data and "xdt_api__v1__feed__user_timeline_graphql_connection" in data["data"]:
-                edges = data["data"]["xdt_api__v1__feed__user_timeline_graphql_connection"].get("edges", [])
+        # 📊 INFO GENERAL DEL POST / REEL
+        if "graphql" in url or "media" in url:
+            try:
+                items = []
 
-                for item in edges:
-                    node = item.get("node", {})
-                    code = node.get("code")
+                if "items" in data:
+                    items = data["items"]
+                elif "data" in data:
+                    return
 
+                for item in items:
+                    code = item.get("code")
                     if not code:
                         continue
 
-                    # Solo posts estaticos (no videos aqui para evitar duplicidad)
-                    if node.get("video_versions") is not None:
-                        continue
+                    self.posts_data[code] = self.posts_data.get(code, {})
 
-                    # Si ya existe como reel, no se sobreescribe
-                    if code in self.data and self.data[code]["type"] == "reel":
-                        continue
-
-                    self.data[code] = {
+                    self.posts_data[code].update({
                         "shortcode": code,
-                        "type": "post",
-                        "likes": node.get("like_count", 0),
-                        "comments": node.get("comment_count", 0),
-                        "views": None
-                    }
+                        "likes": item.get("like_count", 0),
+                        "comments_count": item.get("comment_count", 0),
+                        "views": item.get("play_count") or item.get("view_count"),
+                        "comments": self.posts_data[code].get("comments", [])
+                    })
 
-                print(f"Posts acumulados: {len([d for d in self.data.values() if d['type']=='post'])}")
+            except:
+                pass
 
-            # Procesamiento de REELS
-            if "data" in data and "xdt_api__v1__clips__user__connection_v2" in data["data"]:
-                edges = data["data"]["xdt_api__v1__clips__user__connection_v2"].get("edges", [])
+    def clean_description(self, text):
+        if not text:
+            return text
 
-                for item in edges:
-                    media = item.get("node", {}).get("media", {})
-                    code = media.get("code")
+        # Elimina cualquier etiqueta HTML que se cuele en la captura.
+        text = re.sub(r"<[^>]+>", "", text)
+        # Deja la descripcion en una sola linea sin saltos.
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
 
-                    if not code:
-                        continue
+        # 💬 COMENTARIOS
+        if "comments/" in url:
+            try:
+                code = self.current_post
+                if not code:
+                    return
 
-                    # Los Reels proporcionan conteo de reproducciones (views)
-                    self.data[code] = {
-                        "shortcode": code,
-                        "type": "reel",
-                        "likes": media.get("like_count", 0),
-                        "comments": media.get("comment_count", 0),
-                        "views": media.get("play_count", 0)
-                    }
+                self.posts_data[code]["comments"] = []
 
-                print(f"Reels acumulados: {len([d for d in self.data.values() if d['type']=='reel'])}")
+                for c in data.get("comments", [])[:12]:
+                    self.posts_data[code]["comments"].append({
+                        "user": c.get("user", {}).get("username"),
+                        "text": c.get("text"),
+                        "likes": c.get("comment_like_count", 0),
+                        "verified": c.get("user", {}).get("is_verified", False)
+                    })
 
-        except Exception:
-            pass
+                print(f"💬 Comentarios OK: {code}")
 
-    def scroll_section(self, page, url, max_scrolls=6, label=""):
-        """
-        Realiza scroll automatico en una seccion especifica para cargar mas contenido.
-        
-        Args:
-            page: Pagina de Playwright.
-            url (str): URL a la que navegar.
-            max_scrolls (int): Numero maximo de scrolls a realizar.
-            label (str): Etiqueta para los mensajes de log.
-        """
-        print(f"\nScrapeando {label.upper()}...")
+            except:
+                pass
 
-        page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(5000)
+    # 🧠 FIX REAL AQUÍ (caption + hashtags robusto)
+    def extract_caption(self, page):
+        try:
+            # Esperar caption
+            page.wait_for_selector("h1._ap3a", timeout=5000)
 
-        prev_count = len(self.data)
-        no_change = 0
+            caption_element = page.locator("h1._ap3a").first
 
-        for i in range(max_scrolls):
-            print(f"Scroll {i+1} ({label})")
+            # Texto completo
+            description = caption_element.inner_text()
+            description = self.clean_description(description)
 
-            page.mouse.wheel(0, 3000)
-            page.wait_for_timeout(3000)
+            # Hashtags desde <a>
+            hashtag_elements = caption_element.locator("a").all()
+            hashtags = []
 
-            current_count = len(self.data)
+            for tag in hashtag_elements:
+                text = tag.inner_text()
+                if text.startswith("#"):
+                    hashtags.append(text)
 
-            if current_count == prev_count:
-                no_change += 1
-                print(f"Sin nuevos datos ({no_change})")
-            else:
-                no_change = 0
+            return {
+                "description": description,
+                "hashtags": hashtags
+            }
 
-            if no_change >= 2:
-                print("Deteniendo scroll (no hay mas contenido)")
-                break
+        except Exception as e:
+            print("⚠️ Fallback caption activado")
 
-            prev_count = current_count
+            # fallback por si Instagram cambia clases
+            try:
+                alt = page.locator("article h1").first
+                description = alt.inner_text()
+                description = self.clean_description(description)
 
-    def scrape_account(self, profile_url):
-        """
-        Ejecuta el proceso completo de scraping para una cuenta.
-        
-        Args:
-            profile_url (str): URL del perfil de Instagram.
-            
-        Returns:
-            list: Lista de diccionarios con los datos extraidos.
-        """
+                hashtags = re.findall(r"#\w+", description)
+
+                return {
+                    "description": description,
+                    "hashtags": hashtags
+                }
+            except:
+                return {
+                    "description": None,
+                    "hashtags": []
+                }
+
+    def scrape(self, username):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False)
+
             context = browser.new_context(storage_state=self.auth_file)
             page = context.new_page()
 
-            if id(page) not in self._attached_pages:
-                page.on("response", self.handle_response)
-                self._attached_pages.add(id(page))
+            page.on("response", self.handle_response)
 
-            # Scrapear Posts
-            self.scroll_section(page, profile_url, label="posts")
+            print(f"🌐 Entrando a @{username}")
+            page.goto(f"https://www.instagram.com/{username}/")
+            page.wait_for_timeout(5000)
 
-            # Scrapear Reels
-            reels_url = profile_url.rstrip("/") + "/reels/"
-            self.scroll_section(page, reels_url, label="reels")
+            # 🔗 obtener primeras 12 publicaciones
+            links = page.locator("a[href*='/p/'], a[href*='/reel/']").all()
+
+            for i in range(min(12, len(links))):
+                try:
+                    print(f"➡️ Post {i+1}/12")
+
+                    links[i].click(force=True)
+                    page.wait_for_timeout(3000)
+
+                    url = page.url
+                    code = url.split("/")[-2]
+                    self.current_post = code
+
+                    self.posts_data[code] = self.posts_data.get(code, {})
+                    self.posts_data[code]["shortcode"] = code
+
+                    # 📄 caption FIX aplicado
+                    caption_data = self.extract_caption(page)
+                    self.posts_data[code].update(caption_data)
+
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(1000)
+
+                except:
+                    print(f"⚠️ Error en post {i+1}")
 
             browser.close()
 
-        result = list(self.data.values())
-        print(f"\nDATASET FINAL: {len(result)}")
-        return result
+        return list(self.posts_data.values())
 
-    def save_to_json(self, data, filename="instagram_data.json"):
-        """
-        Guarda los datos extraidos en un archivo JSON.
-        
-        Args:
-            data (list): Datos a guardar.
-            filename (str): Nombre del archivo de salida.
-        """
+    def save(self, data, filename):
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
-        print(f"\nDatos guardados correctamente en: {filename}")
+
+        print(f"\n✅ JSON guardado en {filename}")
+
 
 if __name__ == "__main__":
-    scraper = InstagramScraper()
-    url = "https://www.instagram.com/midu.dev/"
-    data = scraper.scrape_account(url)
-    scraper.save_to_json(data)
-    print("\n--- PRIMEROS 5 RESULTADOS ---")
-    print(json.dumps(data[:5], indent=4))
+    print("🚀 IG Scraper PRO (FIX captions)")
+
+    user = input("👤 Usuario: ").strip()
+    if user.startswith("@"):
+        user = user[1:]
+
+    scraper = IGUnifiedScraper()
+    data = scraper.scrape(user)
+
+    scraper.save(data, f"{user}_dataset.json")
+
+    print("\n🔥 Preview:")
+    print(json.dumps(data[:2], indent=4, ensure_ascii=False))
